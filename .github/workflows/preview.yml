@@ -4,65 +4,57 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: pr-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
-  preview:
+  build:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.head.repo.full_name == github.repository
-
-    concurrency:
-      group: pr-preview-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
-
-    permissions:
-      contents: write
-      pull-requests: write
-
-    env:
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      PREVIEW_DIR: pr-${{ github.event.pull_request.number }}
-      BASE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
 
     steps:
       - name: Checkout
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         uses: actions/checkout@v4
 
-      - name: Deploy preview
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ env.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: .
-          destination_dir: ${{ env.PREVIEW_DIR }}
-          keep_files: true
-          user_name: github-actions[bot]
-          user_email: 41898282+github-actions[bot]@users.noreply.github.com
+      - name: Prepare preview folder
+        run: |
+          mkdir -p pr-${{ github.event.pull_request.number }}
+          cp -r ./* pr-${{ github.event.pull_request.number }}/
 
-      - name: Comment PR
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pr-${{ github.event.pull_request.number }}
+
+  comment:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Comment PR with preview URL
         uses: actions/github-script@v7
         with:
-          github-token: ${{ env.GITHUB_TOKEN }}
           script: |
-            const pr = process.env.PR_NUMBER;
-            const url = `${process.env.BASE_URL}/${process.env.PREVIEW_DIR}/`;
+            const pr = context.payload.pull_request.number;
+
+            const url = `https://${context.repo.owner}.github.io/${context.repo.repo}/pr-${pr}/`;
 
             const marker = '<!-- pr-preview-link -->';
-            const body = `${marker}\nPreview: ${url}`;
+            const body = `${marker}\n🚀 Preview: ${url}`;
 
             const { data: comments } = await github.rest.issues.listComments({
               ...context.repo,
-              issue_number: Number(pr),
-              per_page: 100,
+              issue_number: pr,
             });
 
-            const existing = comments.find(
-              c => (c.user?.type === 'Bot') &&
-              (c.body || '').includes(marker)
+            const existing = comments.find(c =>
+              c.body?.includes(marker)
             );
 
             if (existing) {
@@ -74,7 +66,7 @@ jobs:
             } else {
               await github.rest.issues.createComment({
                 ...context.repo,
-                issue_number: Number(pr),
+                issue_number: pr,
                 body,
               });
             }
